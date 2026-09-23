@@ -16,6 +16,13 @@ jobs:
         with:
           go-version-file: api/go.mod
       - run: test -z "$(gofmt -l .)"
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+          working-directory: api
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go test -race -tags=integration ./...
 
   web:
     runs-on: ubuntu-latest

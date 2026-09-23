@@ -1,0 +1,12 @@
+.env
+.DS_Store
+
+# Go
+/api/docketiq
+
+# Node
+node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
+npm-debug.log*

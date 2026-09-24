@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import type { ReactNode } from "react";
 
 import { Nav } from "@/components/nav";
 
@@ -9,7 +10,9 @@ export const metadata: Metadata = {
   description: "Case and deadline tracker",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+// LayoutProps is generated into .next/types during a build, so depending on it
+// makes `tsc --noEmit` pass or fail based on whether a build ran first.
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en" className="h-full antialiased">
       <body className="mx-auto flex min-h-full max-w-4xl flex-col p-6">

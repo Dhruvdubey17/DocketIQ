@@ -17,5 +17,39 @@ services:
       timeout: 3s
       retries: 10
 
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgres://docketiq:docketiq@postgres:5432/docketiq?sslmode=disable}
+      API_ADDR: ${API_ADDR:-:8080}
+      APP_TIMEZONE: ${APP_TIMEZONE:-America/New_York}
+      POLL_INTERVAL: ${POLL_INTERVAL:-10m}
+      POLL_CONCURRENCY: ${POLL_CONCURRENCY:-5}
+      CACHE_TTL: ${CACHE_TTL:-5m}
+      SOURCES_FILE: ${SOURCES_FILE:-sources.json}
+      MOCK_FEEDS: ${MOCK_FEEDS:-true}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "/docketiq", "-healthcheck"]
+      interval: 5s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  web:
+    build: ./web
+    environment:
+      API_URL: ${API_URL:-http://api:8080}
+      APP_TIMEZONE: ${APP_TIMEZONE:-America/New_York}
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   postgres-data:

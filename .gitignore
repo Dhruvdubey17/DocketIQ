@@ -1,8 +1,9 @@
 .env
 .DS_Store
 
-# Go
+# Go: the compiled binary, whether built with -o or named after its directory
 /api/docketiq
+/api/api
 
 # Node
 node_modules/

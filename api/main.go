@@ -37,6 +37,12 @@ type config struct {
 	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgres://docketiq:docketiq@postgres:5432/docketiq?sslmode=disable"`
 	APIAddr     string `env:"API_ADDR" envDefault:":8080"`
 	AppTimezone string `env:"APP_TIMEZONE" envDefault:"America/New_York"`
+
+	PollInterval    time.Duration `env:"POLL_INTERVAL" envDefault:"10m"`
+	PollConcurrency int           `env:"POLL_CONCURRENCY" envDefault:"5"`
+	CacheTTL        time.Duration `env:"CACHE_TTL" envDefault:"5m"`
+	SourcesFile     string        `env:"SOURCES_FILE" envDefault:"sources.json"`
+	MockFeeds       bool          `env:"MOCK_FEEDS" envDefault:"true"`
 }
 
 func main() {
@@ -77,17 +83,36 @@ func run(healthcheck bool) error {
 		return err
 	}
 
+	sources, err := loadSources(cfg.SourcesFile)
+	if err != nil {
+		return err
+	}
+	poller := NewPoller(ctx, db, sources, loc, cfg.PollConcurrency, cfg.CacheTTL)
+
+	router := newServer(db, poller, loc, time.Now).routes()
+	if cfg.MockFeeds {
+		router.Mount("/mock", mockFeedRoutes(loc, time.Now))
+	}
+
+	// Bind before serving, because the first poll fetches mock feeds from this
+	// same process and would otherwise race the listener.
+	listener, err := net.Listen("tcp", cfg.APIAddr)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", cfg.APIAddr, err)
+	}
+
 	srv := &http.Server{
-		Addr:              cfg.APIAddr,
-		Handler:           newServer(db, loc, time.Now).routes(),
+		Handler:           router,
 		ReadHeaderTimeout: readHeaderTimeout,
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       idleTimeout,
 	}
 
 	listening := make(chan error, 1)
-	go func() { listening <- srv.ListenAndServe() }()
-	slog.Info("listening", "addr", cfg.APIAddr, "timezone", loc.String())
+	go func() { listening <- srv.Serve(listener) }()
+	slog.Info("listening", "addr", cfg.APIAddr, "timezone", loc.String(), "sources", len(sources))
+
+	go pollLoop(ctx, poller, cfg.PollInterval)
 
 	select {
 	case err := <-listening:
@@ -103,6 +128,29 @@ func run(healthcheck bool) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	return srv.Shutdown(shutdownCtx)
+}
+
+// pollLoop runs the startup poll, then one every interval. Sync merges any
+// overlap with a poll triggered over HTTP.
+func pollLoop(ctx context.Context, poller *Poller, interval time.Duration) {
+	runPoll(ctx, poller)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runPoll(ctx, poller)
+		}
+	}
+}
+
+func runPoll(ctx context.Context, poller *Poller) {
+	if _, err := poller.Sync(ctx); err != nil {
+		slog.Error("poll failed", "err", err)
+	}
 }
 
 // waitForDB keeps pinging until Postgres answers. Compose waits for the

@@ -1,0 +1,52 @@
+[
+  {
+    "id": "harlow-docket",
+    "kind": "docket",
+    "url": "http://localhost:8080/mock/docket/harlow.json",
+    "case_id": 1
+  },
+  {
+    "id": "kestrel-docket",
+    "kind": "docket",
+    "url": "http://localhost:8080/mock/docket/kestrel.json",
+    "case_id": 2
+  },
+  {
+    "id": "mendez-docket",
+    "kind": "docket",
+    "url": "http://localhost:8080/mock/docket/mendez.json",
+    "case_id": 3
+  },
+  {
+    "id": "oakridge-docket",
+    "kind": "docket",
+    "url": "http://localhost:8080/mock/docket/oakridge.json",
+    "case_id": 4
+  },
+  {
+    "id": "harlow-mediation",
+    "kind": "calendar",
+    "url": "http://localhost:8080/mock/calendar/harlow-mediation.ics",
+    "case_id": 1
+  },
+  {
+    "id": "kestrel-scheduling",
+    "kind": "calendar",
+    "url": "http://localhost:8080/mock/calendar/kestrel-scheduling.ics",
+    "case_id": 2
+  },
+  {
+    "id": "mendez-court-calendar",
+    "kind": "calendar",
+    "url": "http://localhost:8080/mock/calendar/arden-superior.ics",
+    "case_id": 3,
+    "match": "ARD-CV-26-0412"
+  },
+  {
+    "id": "oakridge-court-calendar",
+    "kind": "calendar",
+    "url": "http://localhost:8080/mock/calendar/arden-superior.ics",
+    "case_id": 4,
+    "match": "ARD-CV-26-0977"
+  }
+]

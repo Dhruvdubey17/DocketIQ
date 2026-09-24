@@ -127,10 +127,23 @@ func (f *fakeStore) Ping(context.Context) error { return f.pingErr }
 
 var testNow = time.Date(2026, 10, 6, 9, 0, 0, 0, time.UTC)
 
-func newTestServer(t *testing.T) (*fakeStore, http.Handler) {
+// fakeSyncer stands in for the poller, which has its own tests.
+type fakeSyncer struct {
+	summary SyncSummary
+	err     error
+	calls   int
+}
+
+func (f *fakeSyncer) Sync(context.Context) (SyncSummary, error) {
+	f.calls++
+	return f.summary, f.err
+}
+
+func newTestServer(t *testing.T) (*fakeStore, *fakeSyncer, http.Handler) {
 	t.Helper()
 	st := newFakeStore()
-	return st, newServer(st, nyc, func() time.Time { return testNow }).routes()
+	poller := &fakeSyncer{summary: SyncSummary{Sources: 8, Fetched: 7, Shared: 1, Errors: []SourceError{}}}
+	return st, poller, newServer(st, poller, nyc, func() time.Time { return testNow }).routes()
 }
 
 func do(t *testing.T, h http.Handler, method, target, body string) *httptest.ResponseRecorder {
@@ -159,7 +172,7 @@ func checkStatus(t *testing.T, rec *httptest.ResponseRecorder, want int) {
 }
 
 func TestHealthz(t *testing.T) {
-	st, h := newTestServer(t)
+	st, _, h := newTestServer(t)
 
 	rec := do(t, h, http.MethodGet, "/healthz", "")
 	checkStatus(t, rec, http.StatusOK)
@@ -172,7 +185,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestListCases(t *testing.T) {
-	st, h := newTestServer(t)
+	st, _, h := newTestServer(t)
 	st.add(Deadline{CaseID: 1, Title: "filing", DueDate: testNow, CreatedAt: testNow})
 
 	rec := do(t, h, http.MethodGet, "/api/cases", "")
@@ -189,7 +202,7 @@ func TestListCases(t *testing.T) {
 
 func TestCreateCase(t *testing.T) {
 	t.Run("with deadlines in request order", func(t *testing.T) {
-		_, h := newTestServer(t)
+		_, _, h := newTestServer(t)
 		rec := do(t, h, http.MethodPost, "/api/cases", `{
 			"title": "Mendez v. City of Arden",
 			"deadlines": [
@@ -212,7 +225,7 @@ func TestCreateCase(t *testing.T) {
 	})
 
 	t.Run("without deadlines", func(t *testing.T) {
-		_, h := newTestServer(t)
+		_, _, h := newTestServer(t)
 		rec := do(t, h, http.MethodPost, "/api/cases", `{"title": "In re Kestrel Pharmaceuticals"}`)
 		checkStatus(t, rec, http.StatusCreated)
 		if got := decode[createCaseResponse](t, rec).Case.DeadlineCount; got != 0 {
@@ -231,7 +244,7 @@ func TestCreateCase(t *testing.T) {
 		}
 		for name, body := range cases {
 			t.Run(name, func(t *testing.T) {
-				_, h := newTestServer(t)
+				_, _, h := newTestServer(t)
 				checkStatus(t, do(t, h, http.MethodPost, "/api/cases", body), http.StatusBadRequest)
 			})
 		}
@@ -239,7 +252,7 @@ func TestCreateCase(t *testing.T) {
 }
 
 func TestDeleteCase(t *testing.T) {
-	_, h := newTestServer(t)
+	_, _, h := newTestServer(t)
 	checkStatus(t, do(t, h, http.MethodDelete, "/api/cases/1", ""), http.StatusNoContent)
 	checkStatus(t, do(t, h, http.MethodDelete, "/api/cases/1", ""), http.StatusNotFound)
 	checkStatus(t, do(t, h, http.MethodDelete, "/api/cases/0", ""), http.StatusBadRequest)
@@ -247,7 +260,7 @@ func TestDeleteCase(t *testing.T) {
 }
 
 func TestCreateDeadline(t *testing.T) {
-	_, h := newTestServer(t)
+	_, _, h := newTestServer(t)
 	body := `{"title": "Initial disclosures due", "due_date": "2026-10-07T17:00:00-04:00"}`
 
 	rec := do(t, h, http.MethodPost, "/api/cases/1/deadlines", body)
@@ -264,7 +277,7 @@ func TestCreateDeadline(t *testing.T) {
 }
 
 func TestListDeadlines(t *testing.T) {
-	st, h := newTestServer(t)
+	st, _, h := newTestServer(t)
 	overdue := st.add(Deadline{CaseID: 1, Title: "overdue", DueDate: testNow.Add(-48 * time.Hour), CreatedAt: testNow})
 	later := st.add(Deadline{CaseID: 1, Title: "later", DueDate: testNow.Add(30 * 24 * time.Hour), CreatedAt: testNow})
 
@@ -295,7 +308,7 @@ func TestListDeadlines(t *testing.T) {
 }
 
 func TestConflicts(t *testing.T) {
-	st, h := newTestServer(t)
+	st, _, h := newTestServer(t)
 	day := time.Date(2026, 10, 8, 13, 0, 0, 0, time.UTC)
 	st.add(Deadline{CaseID: 1, Title: "hearing", DueDate: day, CreatedAt: testNow})
 	st.add(Deadline{CaseID: 1, Title: "filing", DueDate: day.Add(45 * time.Minute), CreatedAt: testNow})
@@ -335,7 +348,7 @@ func TestConflicts(t *testing.T) {
 }
 
 func TestUpdateDeadline(t *testing.T) {
-	st, h := newTestServer(t)
+	st, _, h := newTestServer(t)
 	manual := st.add(Deadline{CaseID: 1, Title: "filing", DueDate: testNow, CreatedAt: testNow})
 	polled := st.add(Deadline{CaseID: 1, Title: "hearing", DueDate: testNow, Source: "docket", CreatedAt: testNow})
 
@@ -352,7 +365,7 @@ func TestUpdateDeadline(t *testing.T) {
 }
 
 func TestDeleteDeadline(t *testing.T) {
-	st, h := newTestServer(t)
+	st, _, h := newTestServer(t)
 	manual := st.add(Deadline{CaseID: 1, Title: "filing", DueDate: testNow, CreatedAt: testNow})
 	polled := st.add(Deadline{CaseID: 1, Title: "hearing", DueDate: testNow, Source: "calendar", CreatedAt: testNow})
 
@@ -362,7 +375,7 @@ func TestDeleteDeadline(t *testing.T) {
 }
 
 func TestErrorBodyShape(t *testing.T) {
-	_, h := newTestServer(t)
+	_, _, h := newTestServer(t)
 	rec := do(t, h, http.MethodGet, "/api/deadlines?sort=alphabetical", "")
 	checkStatus(t, rec, http.StatusBadRequest)
 	if got := decode[map[string]string](t, rec)["error"]; got == "" {
@@ -372,4 +385,37 @@ func TestErrorBodyShape(t *testing.T) {
 
 func deadlinePath(id int) string {
 	return "/api/deadlines/" + strconv.Itoa(id)
+}
+
+func TestPoll(t *testing.T) {
+	t.Run("returns the run summary", func(t *testing.T) {
+		_, poller, h := newTestServer(t)
+		rec := do(t, h, http.MethodPost, "/api/poll", "")
+		checkStatus(t, rec, http.StatusOK)
+
+		body := decode[SyncSummary](t, rec)
+		if body.Sources != 8 || body.Fetched != 7 || body.Shared != 1 {
+			t.Errorf("summary = %+v", body)
+		}
+		if poller.calls != 1 {
+			t.Errorf("Sync called %d times, want 1", poller.calls)
+		}
+	})
+
+	t.Run("failing sources still answer 200", func(t *testing.T) {
+		_, poller, h := newTestServer(t)
+		poller.summary.Errors = []SourceError{{Source: "harlow-docket", Error: "status 500"}}
+
+		rec := do(t, h, http.MethodPost, "/api/poll", "")
+		checkStatus(t, rec, http.StatusOK)
+		if got := decode[SyncSummary](t, rec).Errors; len(got) != 1 {
+			t.Errorf("errors = %v, want one", got)
+		}
+	})
+
+	t.Run("a broken run is a 500", func(t *testing.T) {
+		_, poller, h := newTestServer(t)
+		poller.err = errors.New("database is down")
+		checkStatus(t, do(t, h, http.MethodPost, "/api/poll", ""), http.StatusInternalServerError)
+	})
 }

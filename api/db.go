@@ -291,3 +291,87 @@ func (db *DB) whyNotWritable(ctx context.Context, id int) error {
 	}
 	return fmt.Errorf("deadline %d is manual but the write matched no row", id)
 }
+
+// UpsertCounts is what one batch of polled rows did to the table.
+type UpsertCounts struct {
+	Inserted  int
+	Updated   int
+	Unchanged int
+}
+
+const existingCaseIDsSQL = `SELECT id FROM cases WHERE id = ANY($1)`
+
+func (db *DB) ExistingCaseIDs(ctx context.Context, ids []int) (map[int]bool, error) {
+	rows, err := db.pool.Query(ctx, existingCaseIDsSQL, ids)
+	if err != nil {
+		return nil, fmt.Errorf("existing case ids: %w", err)
+	}
+	found, err := pgx.CollectRows(rows, pgx.RowTo[int])
+	if err != nil {
+		return nil, fmt.Errorf("existing case ids: %w", err)
+	}
+
+	existing := make(map[int]bool, len(found))
+	for _, id := range found {
+		existing[id] = true
+	}
+	return existing, nil
+}
+
+// The WHERE clause on the update is what makes an unchanged row report
+// nothing at all, which separates a quiet poll from one that moved a date.
+const upsertDeadlineSQL = `
+INSERT INTO deadlines (case_id, title, due_date, source, external_id)
+VALUES ($1, $2, $3, $4, $5)
+ON CONFLICT (external_id) DO UPDATE
+SET case_id  = EXCLUDED.case_id,
+    title    = EXCLUDED.title,
+    due_date = EXCLUDED.due_date
+WHERE (deadlines.case_id, deadlines.title, deadlines.due_date)
+      IS DISTINCT FROM (EXCLUDED.case_id, EXCLUDED.title, EXCLUDED.due_date)
+-- xmax is 0 only on rows this statement inserted, which separates inserts
+-- from updates without a second query.
+RETURNING (xmax = 0) AS inserted`
+
+// UpsertDeadlines writes every polled row in one transaction, so a poll is all
+// or nothing.
+func (db *DB) UpsertDeadlines(ctx context.Context, rows []PolledDeadline) (UpsertCounts, error) {
+	var counts UpsertCounts
+	if len(rows) == 0 {
+		return counts, nil
+	}
+
+	tx, err := db.pool.Begin(ctx)
+	if err != nil {
+		return counts, fmt.Errorf("upsert deadlines: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	batch := &pgx.Batch{}
+	for _, row := range rows {
+		batch.Queue(upsertDeadlineSQL, row.CaseID, row.Title, row.DueDate, row.Source, row.ExternalID)
+	}
+
+	results := tx.SendBatch(ctx, batch)
+	for range rows {
+		var inserted bool
+		switch err := results.QueryRow().Scan(&inserted); {
+		case errors.Is(err, pgx.ErrNoRows):
+			counts.Unchanged++
+		case err != nil:
+			_ = results.Close()
+			return UpsertCounts{}, fmt.Errorf("upsert deadlines: %w", err)
+		case inserted:
+			counts.Inserted++
+		default:
+			counts.Updated++
+		}
+	}
+	if err := results.Close(); err != nil {
+		return UpsertCounts{}, fmt.Errorf("upsert deadlines: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return UpsertCounts{}, fmt.Errorf("upsert deadlines: %w", err)
+	}
+	return counts, nil
+}

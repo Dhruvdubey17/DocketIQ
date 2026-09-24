@@ -33,17 +33,22 @@ type store interface {
 	Ping(ctx context.Context) error
 }
 
+type syncer interface {
+	Sync(ctx context.Context) (SyncSummary, error)
+}
+
 type server struct {
-	store store
-	loc   *time.Location
-	now   func() time.Time
+	store  store
+	poller syncer
+	loc    *time.Location
+	now    func() time.Time
 }
 
-func newServer(st store, loc *time.Location, now func() time.Time) *server {
-	return &server{store: st, loc: loc, now: now}
+func newServer(st store, poller syncer, loc *time.Location, now func() time.Time) *server {
+	return &server{store: st, poller: poller, loc: loc, now: now}
 }
 
-func (s *server) routes() http.Handler {
+func (s *server) routes() chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.Recoverer, requestLogger)
 
@@ -61,6 +66,7 @@ func (s *server) routes() http.Handler {
 			r.Patch("/{id}", s.handleUpdateDeadline)
 			r.Delete("/{id}", s.handleDeleteDeadline)
 		})
+		r.Post("/poll", s.handlePoll)
 	})
 	return r
 }
@@ -285,6 +291,17 @@ func (s *server) handleUpdateDeadline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rank([]Deadline{updated}, s.now(), s.loc)[0])
+}
+
+// A run that reports failing sources is still a successful run, so the errors
+// travel in the summary rather than in the status code.
+func (s *server) handlePoll(w http.ResponseWriter, r *http.Request) {
+	summary, err := s.poller.Sync(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *server) handleDeleteDeadline(w http.ResponseWriter, r *http.Request) {

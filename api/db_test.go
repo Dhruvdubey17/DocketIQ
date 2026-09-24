@@ -194,3 +194,121 @@ func TestTimestampsComeBackInUTC(t *testing.T) {
 		t.Errorf("listed due_date is in %s, want UTC", listed[0].DueDate.Location())
 	}
 }
+
+func TestUpsertReportsInsertedThenUnchangedThenUpdated(t *testing.T) {
+	db := startDB(t)
+	ctx := context.Background()
+
+	created, _, err := db.CreateCase(ctx, "Harlow v. Brightline Freight", nil)
+	if err != nil {
+		t.Fatalf("create case: %v", err)
+	}
+
+	due := time.Date(2026, 10, 6, 21, 0, 0, 0, time.UTC)
+	rows := []PolledDeadline{
+		{
+			CaseID:     created.ID,
+			Title:      "Opposition to motion to dismiss due",
+			DueDate:    due,
+			Source:     kindDocket,
+			ExternalID: "harlow-docket:dkt-31",
+		},
+		{
+			CaseID:     created.ID,
+			Title:      "Reply brief due",
+			DueDate:    due.Add(14 * 24 * time.Hour),
+			Source:     kindDocket,
+			ExternalID: "harlow-docket:dkt-34",
+		},
+	}
+
+	first, err := db.UpsertDeadlines(ctx, rows)
+	if err != nil {
+		t.Fatalf("first upsert: %v", err)
+	}
+	if first != (UpsertCounts{Inserted: 2}) {
+		t.Errorf("first run = %+v, want two inserts", first)
+	}
+
+	second, err := db.UpsertDeadlines(ctx, rows)
+	if err != nil {
+		t.Fatalf("second upsert: %v", err)
+	}
+	if second != (UpsertCounts{Unchanged: 2}) {
+		t.Errorf("second run = %+v, want two unchanged", second)
+	}
+
+	// A court moves one hearing and leaves the other alone.
+	rows[0].DueDate = due.Add(48 * time.Hour)
+	third, err := db.UpsertDeadlines(ctx, rows)
+	if err != nil {
+		t.Fatalf("third upsert: %v", err)
+	}
+	if third != (UpsertCounts{Updated: 1, Unchanged: 1}) {
+		t.Errorf("third run = %+v, want one update and one unchanged", third)
+	}
+
+	var total int
+	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM deadlines`).Scan(&total); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("%d rows after three polls, want 2", total)
+	}
+
+	listed, err := db.ListDeadlines(ctx)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if listed[0].Source != kindDocket {
+		t.Errorf("source = %q, want %q", listed[0].Source, kindDocket)
+	}
+}
+
+func TestExistingCaseIDs(t *testing.T) {
+	db := startDB(t)
+	ctx := context.Background()
+
+	created, _, err := db.CreateCase(ctx, "In re Kestrel Pharmaceuticals", nil)
+	if err != nil {
+		t.Fatalf("create case: %v", err)
+	}
+
+	existing, err := db.ExistingCaseIDs(ctx, []int{created.ID, 9999})
+	if err != nil {
+		t.Fatalf("existing case ids: %v", err)
+	}
+	if !existing[created.ID] {
+		t.Errorf("case %d should exist", created.ID)
+	}
+	if existing[9999] {
+		t.Error("case 9999 should not exist")
+	}
+}
+
+func TestUpsertRollsBackOnABadRow(t *testing.T) {
+	db := startDB(t)
+	ctx := context.Background()
+
+	created, _, err := db.CreateCase(ctx, "Mendez v. City of Arden", nil)
+	if err != nil {
+		t.Fatalf("create case: %v", err)
+	}
+
+	due := time.Date(2026, 10, 6, 21, 0, 0, 0, time.UTC)
+	_, err = db.UpsertDeadlines(ctx, []PolledDeadline{
+		{CaseID: created.ID, Title: "Answer due", DueDate: due, Source: kindDocket, ExternalID: "mendez-docket:civ-07"},
+		{CaseID: created.ID, Title: "Discovery cutoff", DueDate: due, Source: "email", ExternalID: "mendez-docket:civ-09"},
+	})
+	if err == nil {
+		t.Fatal("expected the source check to reject the second row")
+	}
+
+	var total int
+	if err := db.pool.QueryRow(ctx, `SELECT count(*) FROM deadlines`).Scan(&total); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("%d rows survived a rolled-back batch, want 0", total)
+	}
+}
